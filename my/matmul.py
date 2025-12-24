@@ -47,7 +47,7 @@ def matmul_kernel(
     for k in range(0, K, BLOCK_SIZE_K):
         a_block = tl.load(a_block_ptr)
         b_block = tl.load(b_block_ptr)
-        acc += tl.dot(a_block, b_block)
+        acc += tl.dot(a_block, b_block, acc)
         a_block_ptr += BLOCK_SIZE_K * stride_ak
         b_block_ptr += BLOCK_SIZE_K * stride_bk
     c_mask = (offset_cm[:, None] < M) & (offset_cn[None, :] < N)
