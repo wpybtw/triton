@@ -358,9 +358,12 @@ def matmul(a, b, activation=""):
 #
 # We can test our custom matrix multiplication operation against a native torch implementation (i.e., cuBLAS).
 
+M = 256
+K = 512
+N = 768
 torch.manual_seed(0)
-a = torch.rand((512, 512), device=DEVICE, dtype=torch.float16) - 0.5
-b = torch.rand((512, 512), device=DEVICE, dtype=torch.float16) - 0.5
+a = torch.rand((M, K), device=DEVICE, dtype=torch.float16) - 0.5
+b = torch.rand((K, N), device=DEVICE, dtype=torch.float16) - 0.5
 triton_output = matmul(a, b)
 torch_output = torch.matmul(a, b)
 print(f"triton_output_with_fp16_inputs={triton_output}")
@@ -372,6 +375,24 @@ if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
     print("✅ Triton and Torch match")
 else:
     print("❌ Triton and Torch differ")
+
+print(f'try transpose B')
+
+a = torch.rand((M, K), device=DEVICE, dtype=torch.float16) - 0.5
+b = torch.rand((N, K), device=DEVICE, dtype=torch.float16) - 0.5
+triton_output = matmul(a, b.t())
+torch_output = torch.matmul(a, b.t())
+print(f"triton_output_with_fp16_inputs={triton_output}")
+print(f"torch_output_with_fp16_inputs={torch_output}")
+
+
+
+if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
+    print("✅ Triton and Torch match")
+else:
+    print("❌ Triton and Torch differ")
+
+
 
 TORCH_HAS_FP8 = hasattr(torch, "float8_e5m2")
 if TORCH_HAS_FP8 and is_cuda():
