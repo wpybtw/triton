@@ -87,9 +87,9 @@ def matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=128):
 #     return C
 
 
-m = 128
+m = 384
 n = 256
-k = 64
+k = 512
 
 A = torch.rand((m, k), device=DEVICE, dtype=torch.float32)
 B = torch.rand((n, k), device=DEVICE, dtype=torch.float32)
