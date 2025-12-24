@@ -366,6 +366,8 @@ torch_output = torch.matmul(a, b)
 print(f"triton_output_with_fp16_inputs={triton_output}")
 print(f"torch_output_with_fp16_inputs={torch_output}")
 
+
+
 if torch.allclose(triton_output, torch_output, atol=1e-2, rtol=0):
     print("✅ Triton and Torch match")
 else:

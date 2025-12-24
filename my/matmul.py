@@ -51,7 +51,10 @@ def matmul_kernel(
         a_block_ptr += BLOCK_SIZE_K * stride_ak
         b_block_ptr += BLOCK_SIZE_K * stride_bk
     c_mask = (offset_cm[:, None] < M) & (offset_cn[None, :] < N)
-    tl.store(c_block_ptr, acc, mask=c_mask)
+    
+    acc_bf16 = acc.to(tl.float16)
+
+    tl.store(c_block_ptr, acc_bf16, mask=c_mask)
 
 
 def matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=64):
@@ -62,7 +65,7 @@ def matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=64):
     assert A.stride(-1) == 1, "A must be contiguous"
     assert B.stride(-1) == 1, "B must be contiguous"
 
-    C = torch.empty((M, N), device=DEVICE, dtype=torch.float32)
+    C = torch.empty((M, N), device=DEVICE, dtype=torch.float16)
     grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), triton.cdiv(N, META["BLOCK_SIZE_N"]))
     matmul_kernel[grid](
         A,
@@ -112,8 +115,8 @@ m = 384
 n = 256
 k = 512
 
-A = torch.rand((m, k), device=DEVICE, dtype=torch.float32)
-B = torch.rand((k, n), device=DEVICE, dtype=torch.float32)
+A = torch.rand((m, k), device=DEVICE, dtype=torch.float16)
+B = torch.rand((k, n), device=DEVICE, dtype=torch.float16)
 golden = torch.matmul(A, B)
 
 C = matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=64)
