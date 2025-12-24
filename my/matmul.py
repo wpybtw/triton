@@ -56,13 +56,12 @@ def matmul_kernel(
     tl.store(c_block_ptr, acc_bf16, mask=c_mask)
 
 
-def matmul_nn(A, B, block_size_m=128, block_size_n=128, block_size_k=64):
+def matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=64):
     M, K = A.shape
     Kb, N = B.shape
 
     assert K == Kb, "Inner dimensions must match"
     assert A.stride(-1) == 1, "A must be contiguous"
-    assert B.stride(-1) == 1, "B must be contiguous"
 
     C = torch.empty((M, N), device=DEVICE, dtype=torch.float16)
     grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), triton.cdiv(N, META["BLOCK_SIZE_N"]))
@@ -85,46 +84,29 @@ def matmul_nn(A, B, block_size_m=128, block_size_n=128, block_size_k=64):
     )
     return C
 
-def matmul_nt(A, B, block_size_m=128, block_size_n=128, block_size_k=64):
-    M, K = A.shape
-    N, Kb = B.shape
-
-    assert K == Kb, "Inner dimensions must match"
-    assert A.stride(-1) == 1, "A must be contiguous"
-    assert B.stride(-1) == 1, "B must be contiguous"
-    
-
-
-    C = torch.empty((M, N), device=DEVICE, dtype=torch.float16)
-    grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), triton.cdiv(N, META["BLOCK_SIZE_N"]))
-    matmul_nt_kernel[grid](
-        A,
-        B,
-        C,
-        M,
-        N,
-        K,
-        A.stride(0),
-        A.stride(1),
-        B.stride(0),
-        B.stride(1),
-        C.stride(0),
-        C.stride(1),
-        BLOCK_SIZE_M=block_size_m,
-        BLOCK_SIZE_N=block_size_n,
-        BLOCK_SIZE_K=block_size_k,
-    )
-    return C
 
 m = 384
 n = 256
 k = 512
 
+
+
 A = torch.rand((m, k), device=DEVICE, dtype=torch.float16)
 B = torch.rand((k, n), device=DEVICE, dtype=torch.float16)
 golden = torch.matmul(A, B)
 
-C = matmul_nn(A, B, block_size_m=128, block_size_n=128, block_size_k=64)
+C = matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=64)
+
+print(f'max diff: {torch.max(torch.abs(C - golden))}')
+print(torch.allclose(C, golden))
+
+print(' B transposed ')
+
+A = torch.rand((m, k), device=DEVICE, dtype=torch.float16)
+B = torch.rand((n, k), device=DEVICE, dtype=torch.float16)
+golden = torch.matmul(A, B.T())
+
+C = matmul(A, B.T(), block_size_m=128, block_size_n=128, block_size_k=64)
 
 print(f'max diff: {torch.max(torch.abs(C - golden))}')
 print(torch.allclose(C, golden))
