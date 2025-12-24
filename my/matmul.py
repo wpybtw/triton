@@ -5,23 +5,33 @@ import triton.language as tl
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
+
 @triton.jit
 def matmul_kernel(
     # Pointers to matrices
-    a_ptr, b_ptr, c_ptr,
+    a_ptr,
+    b_ptr,
+    c_ptr,
     # Matrix dimensions
-    M, N, K,
-    stride_am, stride_ak,
-    stride_bk, stride_bn,
-    stride_cm, stride_cn,
+    M,
+    N,
+    K,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    stride_cm,
+    stride_cn,
     # Meta-parameters
-    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
 ):
     pid_m = tl.program_id(axis=0)
     pid_n = tl.program_id(axis=1)
 
-    a_offset = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M))%M
-    b_offset = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N))%N
+    a_offset = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
+    b_offset = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
     offs_k = tl.arange(0, BLOCK_SIZE_K)
 
     a_block_ptr = a_ptr + a_offset[:, None] * stride_am + offs_k[None, :] * stride_ak
@@ -50,18 +60,27 @@ def matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=128):
     assert A.stride(-1) == 1, "A must be contiguous"
     assert B.stride(-1) == 1, "B must be contiguous"
 
-
     C = torch.empty((M, N), device=DEVICE, dtype=torch.float32)
-    grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']), triton.cdiv(N, META['BLOCK_SIZE_N']))
+    grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]), triton.cdiv(N, META["BLOCK_SIZE_N"]))
     matmul_kernel[grid](
-        A, B, C,
-        M, N, K,
-        A.stride(0), A.stride(1),
-        B.stride(0), B.stride(1),
-        C.stride(0), C.stride(1),
-        BLOCK_SIZE_M=block_size_m, BLOCK_SIZE_N=block_size_n, BLOCK_SIZE_K=block_size_k,
+        A,
+        B,
+        C,
+        M,
+        N,
+        K,
+        A.stride(0),
+        A.stride(1),
+        B.stride(0),
+        B.stride(1),
+        C.stride(0),
+        C.stride(1),
+        BLOCK_SIZE_M=block_size_m,
+        BLOCK_SIZE_N=block_size_n,
+        BLOCK_SIZE_K=block_size_k,
     )
     return C
+
 
 # def matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=128):
 #     # assert B are in row major [N, K]
@@ -92,8 +111,8 @@ n = 256
 k = 512
 
 A = torch.rand((m, k), device=DEVICE, dtype=torch.float32)
-B = torch.rand((n, k), device=DEVICE, dtype=torch.float32)
-golden = torch.matmul(A, B.t)
+B = torch.rand((k, n), device=DEVICE, dtype=torch.float32)
+golden = torch.matmul(A, B)
 
 C = matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=128)
 
