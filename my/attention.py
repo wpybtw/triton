@@ -18,7 +18,8 @@ def _kernel(
     n: int,
     qlens: int,
     kvlens: int,
-    head_dim: int,
+    head_dim: tl.constexpr,
+    softmax_scale,
     stride_qb: tl.constexpr,
     stride_qh: tl.constexpr,  # 64
     stride_qk: tl.constexpr,  # 1
@@ -31,92 +32,93 @@ def _kernel(
     stride_ob: tl.constexpr,
     stride_oh: tl.constexpr,
     stride_ok: tl.constexpr,
-    block_c: tl.constexpr,
     block_r: tl.constexpr,
+    block_c: tl.constexpr,
     # block_size_k: tl.constexpr, # 和dim相同，暂时假设一次计算完
 ):
     head_idx = tl.program_id(0)
     q_block_idx = tl.program_id(1)
 
-    q_head_ptr = q_ptr + head_idx * stride_qb + q_block_idx * block_c * stride_qk
-    o_head_ptr = o_ptr + head_idx * stride_ob + q_block_idx * block_c * stride_ok
+    q_head_ptr = q_ptr + head_idx * stride_qb + q_block_idx * block_r * stride_qh
+    o_head_ptr = o_ptr + head_idx * stride_ob + q_block_idx * block_r * stride_oh
     k_head_ptr = k_ptr + head_idx * stride_kb
     v_head_ptr = v_ptr + head_idx * stride_vb
 
-
+    offset_m = tl.arange(0, block_r)
     offset_k = tl.arange(0, head_dim)
-    q_block_ptr = (
-        q_head_ptr + (tl.arange(0, block_r) * stride_qh)[:, None] + offset_k[None, :] * stride_qk
-    )
+    offset_n = tl.arange(0, block_c)
 
-    o_block = tl.zeros((block_r, block_c), dtype=tl.float32)
-    l_i = tl.zeros((block_r), dtype=tl.float32)
-    m_i = tl.zeros((block_r), dtype=tl.float32) - float("inf")
+    q_block_ptr = q_head_ptr + (offset_m * stride_qh)[:, None] + (offset_k * stride_qk)[None, :]
 
+    o_block = tl.zeros([block_r, head_dim], dtype=tl.float32)
+    l_i = tl.zeros([block_r], dtype=tl.float32)
+    m_i = tl.zeros([block_r], dtype=tl.float32) - float("inf")
 
-    # m_old = m
-    o_block_ptr = o_head_ptr + (tl.arange(0, block_r) * stride_oh)[:, None] + offset_k[None, :] * stride_ok
+    k_block_ptr = k_head_ptr + (offset_n * stride_kh)[None, :] + (offset_k * stride_kk)[:, None]  # 转置加载k
+    v_block_ptr = v_head_ptr + (offset_n * stride_vh)[:, None] + offset_k[None, :] * stride_vk
 
-    k_block_ptr = (
-        q_head_ptr + (tl.arange(0, block_r) * stride_kh)[:, None] + offset_k[None, :] * stride_kk
-    )
-    v_block_ptr = (
-        v_head_ptr + (tl.arange(0, block_r) * stride_vh)[:, None] + offset_k[None, :] * stride_vk
-    )
-
-    # s = tl.zeros([block_r, block_c], dtype=tl.float32)
-
-    q_block = tl.load(q_block_ptr + tl.arange(0, block_r) * stride_qk)
+    q_block = tl.load(q_block_ptr)
 
     for i in range(0, kvlens, block_c):
-        # k_block_ptr = k_ptr + i * stride_kh + tl.arange(0, block_c) * stride_kk
-        # v_block_ptr = v_ptr + i * stride_vh + tl.arange(0, block_c) * stride_vk
         k_block = tl.load(k_block_ptr + i * stride_kh)
-
-        s = q_block @ k_block.transpose(-1, -2) / (head_dim**0.5)
-
-        row_max = tl.max(s, 1)
-        m = tl.maximum(m, row_max)
-
-        p = tl.exp(s - m[:, None])
-        l = l * tl.exp(m_old - m) + tl.sum(p, 1)
         v_block = tl.load(v_block_ptr + i * stride_vh)
-        o_block = (o_block * tl.exp(m_old - m)[:, None] + p @ v_block) / l[:, None]
 
-    tl.store(o_block_ptr, o_block)
+        s = tl.dot(q_block, k_block) * softmax_scale
 
-    tl.store(lse_ptr + pid, l)
-    
+        m_ij = tl.max(s, 1)
+        m_new = tl.maximum(m_i, m_ij)
+
+        alpha = tl.exp(m_i - m_new)
+
+        p = tl.exp(s - m_new[:, None])
+        p_fp16 = p.to(v_block.dtype)
+        l_i = l_i * alpha + tl.sum(p, 1)
+        o_block = o_block * alpha[:, None] + tl.dot(p_fp16, v_block)
+
+        m_i = m_new
+
+    o_block = o_block / l_i[:, None]
+
+    o_block_ptr = o_head_ptr + (offset_m * stride_oh)[:, None] + offset_k[None, :] * stride_ok
+
+    tl.store(o_block_ptr, o_block.to(o_ptr.dtype.element_ty))
+
+    lse_idx = head_idx * qlens + q_block_idx * block_r + tl.arange(0, block_r)
+    tl.store(lse_ptr + lse_idx, m_i + tl.log(l_i))
 
 
 # multi-head attention
-def attention(q, k, v, block_size_b, block_size_h, block_size_k, block_size_v, block_size_o):
+def attention(q, k, v):
     bs, h, qlens, d = q.shape
     _, _, kvlens, _ = k.shape
 
-    q = q.view(-1, qlens, d)
-    k = k.view(-1, kvlens, d)
-    v = v.view(-1, kvlens, d)
+    q = q.view(bs * h, qlens, d)
+    k = k.view(bs * h, kvlens, d)
+    v = v.view(bs * h, kvlens, d)
 
     n = bs * h
-    
+
     # block_q = 64
-    block_c = 128
     block_r = 64
-    grid = (bs * h, triton.cdiv(qlens, block_c))
+    block_c = 128
+    grid = (bs * h, triton.cdiv(qlens, block_r))
+
+    softmax_scale = 1.0 / (d**0.5)
 
     o = torch.empty_like(q)
-
+    lse = torch.empty((bs * h, qlens), dtype=torch.float32, device=q.device)
 
     _kernel[grid](
         q,
         k,
         v,
         o,
+        lse,
         n,
         qlens,
         kvlens,
         d,
+        softmax_scale,
         q.stride(0),
         q.stride(1),
         q.stride(2),
@@ -129,8 +131,8 @@ def attention(q, k, v, block_size_b, block_size_h, block_size_k, block_size_v, b
         o.stride(0),
         o.stride(1),
         o.stride(2),
-        block_c,
         block_r,
+        block_c,
     )
     return o.view(bs, h, qlens, d)
 
@@ -142,8 +144,8 @@ h = 12
 d = 64
 
 
-# DEVICE = triton.runtime.driver.active.get_active_torch_device()
-DEVICE = "cpu"
+DEVICE = triton.runtime.driver.active.get_active_torch_device()
+# DEVICE = "cpu"
 dtype = torch.float16
 Q = torch.randn(bs, h, qlens, d, device=DEVICE, dtype=dtype)
 K = torch.randn(bs, h, kvlens, d, device=DEVICE, dtype=dtype)
@@ -151,9 +153,13 @@ V = torch.randn(bs, h, kvlens, d, device=DEVICE, dtype=dtype)
 
 
 def native(q, k, v):
-    S = Q @ K.transpose(-1, -2) / (d**0.5)
-    O = S.softmax(dim=-1) @ V
-    return O
+    # 简单的 PyTorch 实现用于验证
+    # q: [B, H, L, D]
+    scale = d**-0.5
+    scores = torch.matmul(q, k.transpose(-1, -2)) * scale
+    attn = F.softmax(scores, dim=-1)
+    out = torch.matmul(attn, v)
+    return out
 
 
 def spda(q, k, v):
@@ -161,19 +167,39 @@ def spda(q, k, v):
         q,
         k,
         v,
-        attn_mask=None,
-        dropout_p=0.0,
         is_causal=False,
     )
     return O
 
 
+triton_out = attention(Q, K, V)
+
 native_out = native(Q, K, V)
 spda_out = spda(Q, K, V)
 
+for i in range(bs):
+    for j in range(h):
+        for k in range(qlens):
+            if torch.allclose(triton_out[i, j, k, :], native_out[i, j, k, :], atol=4e-2, rtol=4e-2):
+                continue
+            else:
+                print(f"-----------------{i} {j} {k}")
+                print(f"max abs diff {torch.max(torch.abs(triton_out[i, j, k, :] - native_out[i, j, k, :]))}")
+                print(triton_out[i, j, k, :] - native_out[i, j, k, :])
+                print("Triton Out Sample:", triton_out[i, j, k, :])
+                print("Native Out Sample:", native_out[i, j, k, :])
+                exit()
 
-print(native_out)
-print(spda_out)
 
-print(f"max diff: {torch.max(torch.abs(native_out - spda_out))}")
-print(torch.allclose(native_out, spda_out, atol=1e-3, rtol=1e-3))
+print("Triton Out Sample:", triton_out[0, 0, 0, :])
+print("Native Out Sample:", native_out[0, 0, 0, :])
+
+# 误差验证
+diff = torch.max(torch.abs(triton_out - native_out))
+print(f"Max Diff (Native): {diff}")
+
+diff_spda = torch.max(torch.abs(triton_out - spda_out))
+print(f"Max Diff (SPDA): {diff_spda}")
+
+assert torch.allclose(triton_out, native_out, atol=1e-2, rtol=1e-2), "Mismatch with Native implementation"
+print("Test Passed!")
