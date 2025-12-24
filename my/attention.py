@@ -31,36 +31,46 @@ def _kernel(
     stride_ob: tl.constexpr,
     stride_oh: tl.constexpr,
     stride_ok: tl.constexpr,
-    block_size_c: tl.constexpr,
-    block_size_r: tl.constexpr,
+    block_c: tl.constexpr,
+    block_r: tl.constexpr,
     # block_size_k: tl.constexpr, # 和dim相同，暂时假设一次计算完
 ):
-    pid = tl.program_id(0)
+    head_idx = tl.program_id(0)
+    q_block_idx = tl.program_id(1)
+
+    q_head_ptr = q_ptr + head_idx * stride_qb + q_block_idx * block_c * stride_qk
+    o_head_ptr = o_ptr + head_idx * stride_ob + q_block_idx * block_c * stride_ok
+    k_head_ptr = k_ptr + head_idx * stride_kb
+    v_head_ptr = v_ptr + head_idx * stride_vb
+
 
     offset_k = tl.arange(0, head_dim)
     q_block_ptr = (
-        q_ptr + (pid * stride_qb + tl.arange(0, block_size_r) * stride_qh)[:, None] + offset_k[None, :] * stride_qk
+        q_head_ptr + (tl.arange(0, block_r) * stride_qh)[:, None] + offset_k[None, :] * stride_qk
     )
-    o_block = tl.zeros((block_size_r, block_size_c), dtype=tl.float32)
-    l = tl.zeros((block_size_r), dtype=tl.float32)
-    m = tl.ones((block_size_r), dtype=tl.float32) * (-float("inf"))
-    m_old = m
-    o_block_ptr = o_ptr + (pid * stride_ob + tl.arange(0, block_size_r) * stride_ok)[:, None] + offset_k[None, :] * stride_qk
+
+    o_block = tl.zeros((block_r, block_c), dtype=tl.float32)
+    l_i = tl.zeros((block_r), dtype=tl.float32)
+    m_i = tl.zeros((block_r), dtype=tl.float32) - float("inf")
+
+
+    # m_old = m
+    o_block_ptr = o_head_ptr + (tl.arange(0, block_r) * stride_oh)[:, None] + offset_k[None, :] * stride_ok
 
     k_block_ptr = (
-        k_ptr + (pid * stride_kb + tl.arange(0, block_size_r) * stride_kh)[:, None] + offset_k[None, :] * stride_kk
+        q_head_ptr + (tl.arange(0, block_r) * stride_kh)[:, None] + offset_k[None, :] * stride_kk
     )
     v_block_ptr = (
-        v_ptr + (pid * stride_vb + tl.arange(0, block_size_r) * stride_vh)[:, None] + offset_k[None, :] * stride_vk
+        v_head_ptr + (tl.arange(0, block_r) * stride_vh)[:, None] + offset_k[None, :] * stride_vk
     )
 
-    # s = tl.zeros([block_size_r, block_size_c], dtype=tl.float32)
+    # s = tl.zeros([block_r, block_c], dtype=tl.float32)
 
-    q_block = tl.load(q_block_ptr + tl.arange(0, block_size_r) * stride_qk)
+    q_block = tl.load(q_block_ptr + tl.arange(0, block_r) * stride_qk)
 
-    for i in range(0, kvlens, block_size_c):
-        # k_block_ptr = k_ptr + i * stride_kh + tl.arange(0, block_size_c) * stride_kk
-        # v_block_ptr = v_ptr + i * stride_vh + tl.arange(0, block_size_c) * stride_vk
+    for i in range(0, kvlens, block_c):
+        # k_block_ptr = k_ptr + i * stride_kh + tl.arange(0, block_c) * stride_kk
+        # v_block_ptr = v_ptr + i * stride_vh + tl.arange(0, block_c) * stride_vk
         k_block = tl.load(k_block_ptr + i * stride_kh)
 
         s = q_block @ k_block.transpose(-1, -2) / (head_dim**0.5)
@@ -89,11 +99,14 @@ def attention(q, k, v, block_size_b, block_size_h, block_size_k, block_size_v, b
     v = v.view(-1, kvlens, d)
 
     n = bs * h
-    grid = (bs * h,)
+    
+    # block_q = 64
+    block_c = 128
+    block_r = 64
+    grid = (bs * h, triton.cdiv(qlens, block_c))
+
     o = torch.empty_like(q)
 
-    block_size_c = 128
-    block_size_r = 64
 
     _kernel[grid](
         q,
@@ -116,8 +129,8 @@ def attention(q, k, v, block_size_b, block_size_h, block_size_k, block_size_v, b
         o.stride(0),
         o.stride(1),
         o.stride(2),
-        block_size_c,
-        block_size_r,
+        block_c,
+        block_r,
     )
     return o.view(bs, h, qlens, d)
 
