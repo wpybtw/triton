@@ -52,7 +52,7 @@ def matmul_kernel(
     tl.store(c_block_ptr, acc, mask=c_mask)
 
 
-def matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=128):
+def matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=64):
     M, K = A.shape
     Kb, N = B.shape
 
