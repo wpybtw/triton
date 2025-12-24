@@ -114,6 +114,6 @@ A = torch.rand((m, k), device=DEVICE, dtype=torch.float32)
 B = torch.rand((k, n), device=DEVICE, dtype=torch.float32)
 golden = torch.matmul(A, B)
 
-C = matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=128)
+C = matmul(A, B, block_size_m=128, block_size_n=128, block_size_k=64)
 
 print(torch.allclose(C, golden))
