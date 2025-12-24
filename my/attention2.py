@@ -112,13 +112,14 @@ def _attn_fwd_kernel(
         #      = sum(exp(qk - m_ij)) * beta
         # 实际上更简单写法：p = exp(qk - m_new)
         p = tl.exp(qk - m_new[:, None])
+        p_fp16 = p.to(v.dtype) 
         
         # 更新 l
         l_i = l_i * alpha + tl.sum(p, 1)
 
         # 5. 更新 acc (分子)
         # acc_new = acc_old * alpha + P @ V
-        acc = acc * alpha[:, None] + tl.dot(p, v)
+        acc = acc * alpha[:, None] + tl.dot(p_fp16, v)
 
         # 6. 更新 m
         m_i = m_new
