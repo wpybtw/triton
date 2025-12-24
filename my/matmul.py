@@ -104,9 +104,9 @@ print(' B transposed ')
 
 A = torch.rand((m, k), device=DEVICE, dtype=torch.float16)
 B = torch.rand((n, k), device=DEVICE, dtype=torch.float16)
-golden = torch.matmul(A, B.T())
+golden = torch.matmul(A, B.t())
 
-C = matmul(A, B.T(), block_size_m=128, block_size_n=128, block_size_k=64)
+C = matmul(A, B.t(), block_size_m=128, block_size_n=128, block_size_k=64)
 
 print(f'max diff: {torch.max(torch.abs(C - golden))}')
 print(torch.allclose(C, golden))
