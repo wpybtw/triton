@@ -5,6 +5,12 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
+try:
+    from flash_attn import flash_attn_func
+    HAS_FLASH_ATTN = True
+except ImportError:
+    HAS_FLASH_ATTN = False
+
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
@@ -210,9 +216,9 @@ print("Test Passed!")
         x_names=["S"],
         x_vals=[128 * i for i in range(2, 20)],
         line_arg="provider",
-        line_vals=["naive", "torch", "triton", ],
-        line_names=["naive","Torch", "Triton", ],
-        styles=[("red", "-"), ("green", "-"), ("blue", "-"), ("yellow", "-")],
+        line_vals=["naive", "torch", "triton", 'flash_attn'],
+        line_names=["naive","Torch", "Triton", "FlashAttention"],
+        styles=[("red", "-"), ("yellow", "-"), ("green", "-"), ("blue", "-"), ],
         ylabel="TFLOPS/s",
         plot_name="attention_performance",
         args={'BS' : 1, 'H' : 16, 'D' : 128},
@@ -228,6 +234,19 @@ def benchmark(BS, H, S, D, provider):
         ms = triton.testing.do_bench(lambda: spda(Q, K, V))
     if provider == "triton":
         ms = triton.testing.do_bench(lambda: attention_fa2(Q, K, V))
+    if provider == "flash_attn":
+        if not HAS_FLASH_ATTN:
+            return 0.1 # 或者抛出异常
+        
+        # 2. 关键步骤：转换 Layout
+        # 官方 FlashAttention 接口期望: (Batch, Seq, Heads, Dim)
+        # 并且必须是 contiguous 的
+        q_fa = Q.transpose(1, 2).contiguous()
+        k_fa = K.transpose(1, 2).contiguous()
+        v_fa = V.transpose(1, 2).contiguous()
+        
+        # 调用官方实现
+        ms = triton.testing.do_bench(lambda: flash_attn_func(q_fa, k_fa, v_fa))
 
     flops_per_matmul = 2.0 * BS * H * S * S * D
     total_flops = 2 * flops_per_matmul
