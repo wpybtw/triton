@@ -9,7 +9,7 @@ DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
 @triton.jit
-def _kernel(
+def _fa2_fwd(
     q_ptr,
     k_ptr,
     v_ptr,
@@ -87,8 +87,8 @@ def _kernel(
     tl.store(lse_ptr + lse_idx, m_i + tl.log(l_i))
 
 
-# multi-head attention
-def attention(q, k, v):
+# multi-head attention_fa2
+def attention_fa2(q, k, v):
     bs, h, qlens, d = q.shape
     _, _, kvlens, _ = k.shape
 
@@ -108,7 +108,7 @@ def attention(q, k, v):
     o = torch.empty_like(q)
     lse = torch.empty((bs * h, qlens), dtype=torch.float32, device=q.device)
 
-    _kernel[grid](
+    _fa2_fwd[grid](
         q,
         k,
         v,
@@ -172,7 +172,7 @@ def spda(q, k, v):
     return O
 
 
-triton_out = attention(Q, K, V)
+triton_out = attention_fa2(Q, K, V)
 
 native_out = native(Q, K, V)
 spda_out = spda(Q, K, V)
@@ -227,7 +227,7 @@ def benchmark(BS, H, S, D, provider):
     if provider == "torch":
         ms = triton.testing.do_bench(lambda: spda(Q, K, V))
     if provider == "triton":
-        ms = triton.testing.do_bench(lambda: attention(Q, K, V))
+        ms = triton.testing.do_bench(lambda: attention_fa2(Q, K, V))
 
     flops_per_matmul = 2.0 * BS * H * S * S * D
     total_flops = 2 * flops_per_matmul
@@ -236,4 +236,4 @@ def benchmark(BS, H, S, D, provider):
 
     return tfps(ms)
 
-benchmark.run(show_plots=False, print_data=True, save_path='attention')
+benchmark.run(show_plots=False, print_data=True, save_path='attention_fa2')
